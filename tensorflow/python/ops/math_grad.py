@@ -1980,6 +1980,40 @@ def _CumsumGrad(op: ops.Operation, grad):
   ]
 
 
+def _CumprodGradNonReverse(x, axis, grad, exclusive):
+  """Gradient of non-reversed Cumprod, including entries where x is zero."""
+  prod = math_ops.cumprod(x, axis, exclusive=exclusive)
+  out = math_ops.cumsum(
+      prod * grad, axis, exclusive=exclusive, reverse=True
+  )
+  safe_grad = math_ops.div_no_nan(out, x)
+
+  is_zero = math_ops.equal(x, 0)
+  zero_count_before = math_ops.cumsum(
+      math_ops.cast(is_zero, dtypes.int32),
+      axis,
+      exclusive=True,
+  )
+  first_zero = math_ops.logical_and(
+      is_zero, math_ops.equal(zero_count_before, 0)
+  )
+
+  x_safe = array_ops.where_v2(is_zero, array_ops.ones_like(x), x)
+  if exclusive:
+    zero_count = zero_count_before
+  else:
+    zero_count = zero_count_before + math_ops.cast(is_zero, dtypes.int32)
+  prod_safe = math_ops.cumprod(x_safe, axis, exclusive=exclusive)
+  zero_terms = array_ops.where_v2(
+      math_ops.equal(zero_count, 1),
+      prod_safe * grad,
+      array_ops.zeros_like(grad),
+  )
+  zero_grad = math_ops.cumsum(zero_terms, axis, reverse=True)
+
+  return array_ops.where_v2(first_zero, zero_grad, safe_grad)
+
+
 @ops.RegisterGradient("Cumprod")
 def _CumprodGrad(op: ops.Operation, grad):
   x = op.inputs[0]
@@ -1987,11 +2021,17 @@ def _CumprodGrad(op: ops.Operation, grad):
   exclusive = op.get_attr("exclusive")
   reverse = op.get_attr("reverse")
 
-  prod = math_ops.cumprod(x, axis, exclusive=exclusive, reverse=reverse)
-  out = math_ops.cumsum(
-      prod * grad, axis, exclusive=exclusive, reverse=not reverse
-  )
-  return [math_ops.div_no_nan(out, x), None]
+  if reverse:
+    axis_vector = array_ops.reshape(axis, [1])
+    x = array_ops.reverse_v2(x, axis_vector)
+    grad = array_ops.reverse_v2(grad, axis_vector)
+
+  out = _CumprodGradNonReverse(x, axis, grad, exclusive)
+
+  if reverse:
+    out = array_ops.reverse_v2(out, axis_vector)
+
+  return [out, None]
 
 
 # pylint: disable=missing-function-docstring

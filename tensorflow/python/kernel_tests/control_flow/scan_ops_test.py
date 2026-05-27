@@ -16,6 +16,8 @@
 
 import numpy as np
 
+from tensorflow.python.eager import backprop
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors_impl
@@ -324,6 +326,14 @@ class CumprodTest(test.TestCase):
           t, shape, result, shape, x_init_value=x, delta=1)
     self.assertAllClose(jacob_t, jacob_n, rtol=1e-8, atol=1e-8)
 
+  def _compareGradientWithInput(self, x, axis, exclusive, reverse):
+    with self.cached_session():
+      t = ops.convert_to_tensor(x)
+      result = math_ops.cumprod(t, axis, exclusive, reverse)
+      jacob_t, jacob_n = gradient_checker.compute_gradient(
+          t, x.shape, result, x.shape, x_init_value=x, delta=1e-3)
+    self.assertAllClose(jacob_t, jacob_n, rtol=1e-8, atol=1e-8)
+
   @test_util.run_deprecated_v1
   def testGradient(self):
     for axis in (-1, 0):
@@ -350,6 +360,38 @@ class CumprodTest(test.TestCase):
       for exclusive in [True, False]:
         for reverse in [True, False]:
           self._compareGradient([2, 4], axis, exclusive, reverse)
+
+  @test_util.run_deprecated_v1
+  def testGradientWithZeros(self):
+    for x in [
+        np.array([1.5, 0.0, 2.0, 3.0], dtype=np.float64),
+        np.array([2.0, 0.0, 0.0, 3.0], dtype=np.float64),
+    ]:
+      for axis in (-1, 0):
+        for exclusive in [True, False]:
+          for reverse in [True, False]:
+            self._compareGradientWithInput(x, axis, exclusive, reverse)
+
+  @test_util.run_deprecated_v1
+  def testGradientWithZeros2D(self):
+    x = np.array([[1.0, 0.0, 2.0], [3.0, 4.0, 0.0]], dtype=np.float64)
+    for axis in (-2, -1, 0, 1):
+      for exclusive in [True, False]:
+        for reverse in [True, False]:
+          self._compareGradientWithInput(x, axis, exclusive, reverse)
+
+  @test_util.run_v2_only
+  def testGradientWithZerosXla(self):
+
+    @def_function.function(jit_compile=True)
+    def f(x):
+      with backprop.GradientTape() as tape:
+        tape.watch(x)
+        y = math_ops.reduce_sum(math_ops.cumprod(x))
+      return tape.gradient(y, x)
+
+    x = constant_op.constant([1.5, 0.0, 2.0, 3.0], dtype=dtypes.float64)
+    self.assertAllClose([1.0, 13.5, 0.0, 0.0], self.evaluate(f(x)))
 
 
 if __name__ == "__main__":
